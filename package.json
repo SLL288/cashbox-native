@@ -8,7 +8,10 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "build:ios:local": "npx eas-cli build --platform ios --profile production --local --output ./build/Cashbox.ipa",
+    "build:android:local:apk": "npx eas-cli build --platform android --profile preview --local --output ./build/Cashbox.apk",
+    "build:android:local:aab": "npx eas-cli build --platform android --profile production --local --output ./build/Cashbox.aab"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

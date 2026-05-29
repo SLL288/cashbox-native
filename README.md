@@ -1,50 +1,81 @@
-# Welcome to your Expo app 👋
+# Cashbox Native
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Expo React Native app for the Cashbox mobile workflow.
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Setup
 
 ```bash
-npm run reset-project
+git clone https://github.com/SLL288/cashbox-native.git
+cd cashbox-native
+npm install
+npx eas-cli login
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Check the project before building:
 
-## Learn more
+```bash
+npx tsc --noEmit
+npm run lint
+npx eas-cli config --profile production --platform ios
+npx eas-cli config --profile production --platform android
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+## Local Builds
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Local EAS builds must be run one platform at a time. Do not use `--platform all` with `--local`.
 
-## Join the community
+### iOS on Mac
 
-Join our community of developers creating universal apps.
+Requirements: macOS, Xcode, CocoaPods, fastlane, and an Apple Developer account with valid signing credentials.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```bash
+npm run build:ios:local
+```
+
+The output file is:
+
+```text
+build/Cashbox.ipa
+```
+
+Upload the IPA to App Store Connect/TestFlight with Transporter or EAS Submit.
+
+### Android APK for Direct Install
+
+Requirements: Android Studio, Android SDK, Java/OpenJDK, and Expo login.
+
+```bash
+npm run build:android:local:apk
+```
+
+The output file is:
+
+```text
+build/Cashbox.apk
+```
+
+Send this APK to managers for direct Android install.
+
+### Android AAB for Play Console
+
+```bash
+npm run build:android:local:aab
+```
+
+The output file is:
+
+```text
+build/Cashbox.aab
+```
+
+Use the AAB for Google Play Console internal testing or production tracks.
+
+## Cloud Builds
+
+Cloud builds consume Expo/EAS quota:
+
+```bash
+npx eas-cli build --platform ios --profile production
+npx eas-cli build --platform android --profile production
+```
+
