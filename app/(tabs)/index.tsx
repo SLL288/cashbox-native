@@ -42,6 +42,7 @@ export default function TodayScreen() {
   const [overview, setOverview] = useState<DailyCashOverview | null>(null);
   const [fundsOpen, setFundsOpen] = useState(false);
   const [actualOpen, setActualOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const [dateOpen, setDateOpen] = useState(false);
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -191,6 +192,9 @@ export default function TodayScreen() {
           <Pressable style={styles.iconButton} onPress={() => { void tapFeedback('返回项目选择'); setActiveProjectId(null); }}>
             <Ionicons name="swap-horizontal-outline" size={24} color="#111827" />
           </Pressable>
+          <Pressable style={styles.iconButton} onPress={() => { void tapFeedback('使用说明'); setInfoOpen(true); }}>
+            <Ionicons name="information-circle-outline" size={24} color="#111827" />
+          </Pressable>
           <Pressable style={styles.iconButton} onPress={() => { void tapFeedback('退出登录'); logout(); router.replace('/login'); }}>
             <Ionicons name="log-out-outline" size={24} color="#111827" />
           </Pressable>
@@ -261,10 +265,31 @@ export default function TodayScreen() {
 
           <CashModal visible={fundsOpen} title="编辑初始资金" daily={daily} fields="initial" onClose={() => setFundsOpen(false)} onSaved={load} />
           <CashModal visible={actualOpen} title="编辑实点现金" daily={daily} fields="actual" onClose={() => setActualOpen(false)} onSaved={load} />
+          <InfoModal visible={infoOpen} onClose={() => setInfoOpen(false)} />
         </>
       ) : null}
     </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function InfoModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  return (
+    <Modal visible={visible} animationType="fade" transparent>
+      <Pressable style={styles.infoBackdrop} onPress={() => { void tapFeedback('关闭说明'); onClose(); }}>
+        <Pressable style={styles.infoCard} onPress={() => undefined}>
+          <View style={styles.infoHeader}>
+            <Ionicons name="information-circle-outline" size={24} color="#7C5C16" />
+            <Text style={styles.infoTitle}>使用说明</Text>
+          </View>
+          <Text style={styles.infoText}>初始资金：每天开始时填写开账现金；默认带入上一单余额。</Text>
+          <Text style={styles.infoText}>实点现金：每天结束时填写实际现金余额，用来校准现金差额。</Text>
+          <Pressable style={styles.infoCloseButton} onPress={() => { void tapFeedback('知道了'); onClose(); }}>
+            <Text style={styles.infoCloseText}>知道了</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -514,4 +539,11 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
   secondaryButton: { flex: 1, minHeight: 52, borderRadius: 8, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#D1D5DB', alignItems: 'center', justifyContent: 'center' },
   secondaryButtonText: { color: '#111827', fontSize: 16, fontWeight: '900' },
+  infoBackdrop: { flex: 1, backgroundColor: 'rgba(17, 24, 39, 0.38)', alignItems: 'center', justifyContent: 'center', padding: 18 },
+  infoCard: { width: '100%', maxWidth: 360, borderRadius: 8, backgroundColor: '#FFFCF5', borderWidth: 1, borderColor: '#C8A94B', padding: 18 },
+  infoHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 },
+  infoTitle: { color: '#111827', fontSize: 20, fontWeight: '900' },
+  infoText: { color: '#374151', fontSize: 16, lineHeight: 24, fontWeight: '700', marginTop: 8 },
+  infoCloseButton: { minHeight: 48, borderRadius: 8, backgroundColor: '#111827', alignItems: 'center', justifyContent: 'center', marginTop: 18 },
+  infoCloseText: { color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
 });
