@@ -15,8 +15,9 @@ function savedMessage(lines: string[]) {
 }
 
 export default function AddRecordScreen() {
-  const params = useLocalSearchParams<{ type?: TransactionType }>();
+  const params = useLocalSearchParams<{ type?: TransactionType; date?: string }>();
   const [type, setType] = useState<TransactionType>(params.type === 'cash_in' || params.type === 'exchange' || params.type === 'transfer' ? params.type : 'expense');
+  const selectedDate = typeof params.date === 'string' ? params.date.slice(0, 10) : undefined;
   const [currency, setCurrency] = useState<Currency>('USD');
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
@@ -101,6 +102,7 @@ export default function AddRecordScreen() {
         toCurrency,
         toAmount: to,
         photoUri,
+        date: selectedDate,
       });
       setFromAmount('');
       setToAmount('');
@@ -134,6 +136,7 @@ export default function AddRecordScreen() {
         toUserId,
         note,
         photoUri,
+        date: selectedDate,
       });
       setAmount('');
       setNote('');
@@ -157,6 +160,7 @@ export default function AddRecordScreen() {
       changeUsd: type === 'expense' ? parseAmount(changeUsd) || 0 : 0,
       changeLrd: type === 'expense' ? parseAmount(changeLrd) || 0 : 0,
       photoUri,
+      date: selectedDate,
     });
     setAmount('');
     setNote('');

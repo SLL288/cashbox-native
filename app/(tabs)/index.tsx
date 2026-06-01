@@ -11,13 +11,14 @@ import {
   getCurrentUser,
   getDailyCashOverview,
   getDailySummary,
+  getExpectedOpeningBalance,
   getOrCreateDailyCash,
   getTodayIso,
   listProjectsForCurrentUser,
   logout,
+  saveDailyCash,
   setActiveProjectId,
   subscribeAuth,
-  updateDailyCash,
 } from '@/lib/db';
 import { getAutoSyncStatus, notifyAutoSyncComplete, setAutoSyncStatus, subscribeAutoSyncComplete, subscribeAutoSyncStatus, type AutoSyncStatus } from '@/lib/syncSignal';
 import { syncWithSupabase } from '@/lib/sync';
@@ -38,6 +39,7 @@ export default function TodayScreen() {
   const [selectedDate, setSelectedDate] = useState(getTodayIso());
   const [deviceToday, setDeviceToday] = useState(getTodayIso());
   const [daily, setDaily] = useState<DailyCash | null>(null);
+  const [expectedOpening, setExpectedOpening] = useState<{ usd: number; lrd: number } | null>(null);
   const [summary, setSummary] = useState<DailySummary>(blankDailySummary());
   const [overview, setOverview] = useState<DailyCashOverview | null>(null);
   const [fundsOpen, setFundsOpen] = useState(false);
@@ -59,16 +61,19 @@ export default function TodayScreen() {
     setProjectId(selected);
     if (selected) {
       const summaryUserId = currentUser?.role === 'viewer' ? null : currentUser?.local_user_id;
-      const [cash, totals, projectOverview] = await Promise.all([
+      const [cash, opening, totals, projectOverview] = await Promise.all([
         getOrCreateDailyCash(selected, selectedDate),
+        getExpectedOpeningBalance(selected, selectedDate, currentUser?.local_user_id),
         getDailySummary(selected, selectedDate, summaryUserId, true),
         getDailyCashOverview(selected, selectedDate),
       ]);
       setDaily(cash);
+      setExpectedOpening(opening);
       setSummary(totals);
       setOverview(projectOverview);
     } else {
       setDaily(null);
+      setExpectedOpening(null);
       setSummary(blankDailySummary());
       setOverview(null);
     }
@@ -90,14 +95,26 @@ export default function TodayScreen() {
   const expectedLrd = (daily?.initial_lrd ?? 0) + summary.cash_in_lrd + summary.exchange_in_lrd - summary.cash_out_lrd - summary.exchange_out_lrd;
   const diffUsd = daily?.actual_usd === null || daily?.actual_usd === undefined ? null : daily.actual_usd - expectedUsd;
   const diffLrd = daily?.actual_lrd === null || daily?.actual_lrd === undefined ? null : daily.actual_lrd - expectedLrd;
+  const hasSavedDailyCash = Boolean(daily?.local_daily_id);
+  const openingOutdated = Boolean(
+    hasSavedDailyCash &&
+    expectedOpening &&
+    daily &&
+    (Math.abs(daily.initial_usd - expectedOpening.usd) > 0.0001 || Math.abs(daily.initial_lrd - expectedOpening.lrd) > 0.0001)
+  );
 
   const enterProject = async (nextProjectId: string) => {
     void tapFeedback('进入项目');
     setActiveProjectId(nextProjectId);
     setProjectId(nextProjectId);
     const summaryUserId = user?.role === 'viewer' ? null : user?.local_user_id;
-    const [cash, totals] = await Promise.all([getOrCreateDailyCash(nextProjectId, selectedDate), getDailySummary(nextProjectId, selectedDate, summaryUserId, true)]);
+    const [cash, opening, totals] = await Promise.all([
+      getOrCreateDailyCash(nextProjectId, selectedDate),
+      getExpectedOpeningBalance(nextProjectId, selectedDate, user?.local_user_id),
+      getDailySummary(nextProjectId, selectedDate, summaryUserId, true),
+    ]);
     setDaily(cash);
+    setExpectedOpening(opening);
     setSummary(totals);
     setOverview(await getDailyCashOverview(nextProjectId, selectedDate));
   };
@@ -225,6 +242,12 @@ export default function TodayScreen() {
             <MoneyRow label="实点" usd={daily.actual_usd === null ? '未录入' : `$${money(daily.actual_usd)}`} lrd={daily.actual_lrd === null ? '未录入' : `L$ ${money(daily.actual_lrd)}`} muted={daily.actual_usd === null && daily.actual_lrd === null} />
             <MoneyRow label="差额" usd={diffUsd === null ? '未录入' : `$${money(diffUsd)}`} lrd={diffLrd === null ? '未录入' : `L$ ${money(diffLrd)}`} tone={(diffUsd ?? 0) < 0 || (diffLrd ?? 0) < 0 ? 'bad' : 'good'} />
           </View>}
+          {openingOutdated ? (
+            <View style={styles.warningBanner}>
+              <Ionicons name="warning-outline" size={18} color="#92400E" />
+              <Text style={styles.warningText}>Opening balance may be outdated because previous records changed.</Text>
+            </View>
+          ) : null}
 
           {overview ? (
             <View style={styles.panel}>
@@ -244,10 +267,10 @@ export default function TodayScreen() {
 
           <View style={styles.panel}>
             <Text style={styles.sectionTitle}>今日流水</Text>
-            <ActionRow label="现金收入" detail={`USD ${money(summary.cash_in_usd)} / LRD ${money(summary.cash_in_lrd)}`} tone="good" onPress={user?.role === 'viewer' ? undefined : () => router.push('/add?type=cash_in')} />
-            <ActionRow label="支出" detail={`USD ${money(summary.cash_out_usd)} / LRD ${money(summary.cash_out_lrd)}`} tone="bad" onPress={user?.role === 'viewer' ? undefined : () => router.push('/add?type=expense')} />
-            <ActionRow label="货币兑换" detail={`入 USD ${money(summary.exchange_in_usd)} / 入 LRD ${money(summary.exchange_in_lrd)}`} onPress={user?.role === 'viewer' ? undefined : () => router.push('/add?type=exchange')} />
-            {user?.role === 'viewer' ? null : <ActionRow label="经理转账" detail="转给另一位经理" onPress={() => router.push('/add?type=transfer')} />}
+            <ActionRow label="现金收入" detail={`USD ${money(summary.cash_in_usd)} / LRD ${money(summary.cash_in_lrd)}`} tone="good" onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=cash_in&date=${selectedDate}`)} />
+            <ActionRow label="支出" detail={`USD ${money(summary.cash_out_usd)} / LRD ${money(summary.cash_out_lrd)}`} tone="bad" onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=expense&date=${selectedDate}`)} />
+            <ActionRow label="货币兑换" detail={`入 USD ${money(summary.exchange_in_usd)} / 入 LRD ${money(summary.exchange_in_lrd)}`} onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=exchange&date=${selectedDate}`)} />
+            {user?.role === 'viewer' ? null : <ActionRow label="经理转账" detail="转给另一位经理" onPress={() => router.push(`/add?type=transfer&date=${selectedDate}`)} />}
           </View>
 
           <Pressable style={styles.panel} disabled={user?.role === 'viewer'} onPress={() => { void tapFeedback('编辑初始资金'); setFundsOpen(true); }}>
@@ -256,6 +279,7 @@ export default function TodayScreen() {
               <Text style={styles.tapHint}>点击编辑</Text>
             </View>
             <MoneyRow label="初始" usd={`$${money(daily.initial_usd)}`} lrd={`L$ ${money(daily.initial_lrd)}`} />
+            {!hasSavedDailyCash ? <Text style={styles.previewHint}>预览初始余额，保存后才会建立现金日。</Text> : null}
           </Pressable>
 
           <Pressable style={styles.detailButton} onPress={() => { void tapFeedback('查看明细'); router.push(`/history?date=${selectedDate}`); }}>
@@ -263,8 +287,8 @@ export default function TodayScreen() {
             <Text style={styles.detailText}>查看当天支出和收入明细</Text>
           </Pressable>
 
-          <CashModal visible={fundsOpen} title="编辑初始资金" daily={daily} fields="initial" onClose={() => setFundsOpen(false)} onSaved={load} />
-          <CashModal visible={actualOpen} title="编辑实点现金" daily={daily} fields="actual" onClose={() => setActualOpen(false)} onSaved={load} />
+          <CashModal visible={fundsOpen} title="编辑初始资金" projectId={projectId} daily={daily} fields="initial" onClose={() => setFundsOpen(false)} onSaved={load} />
+          <CashModal visible={actualOpen} title="编辑实点现金" projectId={projectId} daily={daily} fields="actual" onClose={() => setActualOpen(false)} onSaved={load} />
           <InfoModal visible={infoOpen} onClose={() => setInfoOpen(false)} />
         </>
       ) : null}
@@ -395,7 +419,23 @@ function DateSelect({
   );
 }
 
-function CashModal({ visible, title, daily, fields, onClose, onSaved }: { visible: boolean; title: string; daily: DailyCash; fields: 'initial' | 'actual'; onClose: () => void; onSaved: () => void }) {
+function CashModal({
+  visible,
+  title,
+  projectId,
+  daily,
+  fields,
+  onClose,
+  onSaved,
+}: {
+  visible: boolean;
+  title: string;
+  projectId: string;
+  daily: DailyCash;
+  fields: 'initial' | 'actual';
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const [usd, setUsd] = useState('');
   const [lrd, setLrd] = useState('');
   const [note, setNote] = useState('');
@@ -410,12 +450,17 @@ function CashModal({ visible, title, daily, fields, onClose, onSaved }: { visibl
   }, [daily, fields, visible]);
 
   const save = async () => {
-    await updateDailyCash(daily.local_daily_id, {
+    const values: { initial_usd?: number; initial_lrd?: number; actual_usd?: number | null; actual_lrd?: number | null; note?: string | null } = {
       ...(fields === 'initial'
         ? { initial_usd: parseMoney(usd), initial_lrd: parseMoney(lrd) }
         : { actual_usd: usd.trim() ? parseMoney(usd) : null, actual_lrd: lrd.trim() ? parseMoney(lrd) : null }),
       note: note.trim() || null,
-    });
+    };
+    if (fields === 'actual' && !daily.local_daily_id && values.actual_usd === null && values.actual_lrd === null) {
+      onClose();
+      return;
+    }
+    await saveDailyCash(projectId, daily.date, values);
     onClose();
     void successFeedback('保存成功');
     Alert.alert('已保存', '数据已保存到本机。');
@@ -423,7 +468,13 @@ function CashModal({ visible, title, daily, fields, onClose, onSaved }: { visibl
   };
 
   const clearActual = async () => {
-    await updateDailyCash(daily.local_daily_id, {
+    if (!daily.local_daily_id) {
+      setUsd('');
+      setLrd('');
+      onClose();
+      return;
+    }
+    await saveDailyCash(projectId, daily.date, {
       actual_usd: null,
       actual_lrd: null,
       note: note.trim() || null,
@@ -514,6 +565,9 @@ const styles = StyleSheet.create({
   actionDetail: { color: '#4B5563', fontSize: 13, marginTop: 4, fontWeight: '700' },
   actionHint: { color: '#7C5C16', fontSize: 13, fontWeight: '900' },
   overviewHint: { color: '#6B7280', fontSize: 12, marginTop: 8 },
+  previewHint: { color: '#6B7280', fontSize: 12, marginTop: 8, fontWeight: '700' },
+  warningBanner: { minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#F59E0B', backgroundColor: '#FEF3C7', flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12, marginBottom: 12 },
+  warningText: { color: '#92400E', fontSize: 13, fontWeight: '800', flex: 1 },
   personRow: { borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingTop: 9, marginTop: 9 },
   personName: { color: '#111827', fontSize: 14, fontWeight: '900' },
   personValue: { color: '#4B5563', fontSize: 13, marginTop: 3, fontWeight: '700' },

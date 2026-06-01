@@ -428,7 +428,6 @@ function isNewerDailyCashRow(next: DailyCash, current: DailyCash) {
 }
 
 export async function getOrCreateDailyCash(projectId: string, date = todayIso()) {
-  const db = await getDb();
   const user = await getCurrentUser();
   const userId = currentUserId ?? ADMIN_ID;
   if (user?.role === 'viewer') {
@@ -453,16 +452,31 @@ export async function getOrCreateDailyCash(projectId: string, date = todayIso())
   const existing = await getLatestDailyCashForUser(projectId, date, userId);
   if (existing) return existing;
   const previousBalance = await getCarryForwardBalance(projectId, date, userId);
+  return buildSyntheticDailyCash(projectId, date, userId, previousBalance);
+}
+
+export async function getExpectedOpeningBalance(projectId: string, date = todayIso(), userId = currentUserId ?? ADMIN_ID) {
+  return getCarryForwardBalance(projectId, date, userId);
+}
+
+async function createDailyCashForUser(
+  projectId: string,
+  date: string,
+  userId: string,
+  values: { initial_usd?: number; initial_lrd?: number; actual_usd?: number | null; actual_lrd?: number | null; note?: string | null } = {}
+) {
+  const db = await getDb();
+  const previousBalance = await getCarryForwardBalance(projectId, date, userId);
   const row: Omit<DailyCash, 'id'> = {
     local_daily_id: localId('daily'),
     local_project_id: projectId,
     local_user_id: userId,
     date,
-    initial_usd: previousBalance.usd,
-    initial_lrd: previousBalance.lrd,
-    actual_usd: null,
-    actual_lrd: null,
-    note: null,
+    initial_usd: values.initial_usd ?? previousBalance.usd,
+    initial_lrd: values.initial_lrd ?? previousBalance.lrd,
+    actual_usd: values.actual_usd ?? null,
+    actual_lrd: values.actual_lrd ?? null,
+    note: values.note ?? null,
     created_by: currentUserId,
     created_at_local: nowIso(),
     updated_by: null,
@@ -487,7 +501,13 @@ export async function getOrCreateDailyCash(projectId: string, date = todayIso())
     row.sync_status
   );
   await audit({ tableName: 'daily_cash', recordId: row.local_daily_id, action: 'create', newValue: row, projectId });
-  return getOrCreateDailyCash(projectId, date);
+  return getLatestDailyCashForUser(projectId, date, userId);
+}
+
+async function ensureDailyCashForUser(projectId: string, date: string, userId: string) {
+  const existing = await getLatestDailyCashForUser(projectId, date, userId);
+  if (existing) return existing;
+  return createDailyCashForUser(projectId, date, userId);
 }
 
 export async function getDailySummary(projectId: string, date = todayIso(), userFilterId?: string | null, bypassRole = false) {
@@ -650,6 +670,22 @@ export async function updateDailyCash(
   await audit({ tableName: 'daily_cash', recordId: dailyId, action: 'edit', oldValue: oldRow, newValue: next, projectId: oldRow.local_project_id });
 }
 
+export async function saveDailyCash(
+  projectId: string,
+  date: string,
+  values: { initial_usd?: number; initial_lrd?: number; actual_usd?: number | null; actual_lrd?: number | null; note?: string | null }
+) {
+  const user = await getCurrentUser();
+  if (!currentUserId) throw new Error('Missing active user');
+  if (user?.role === 'viewer') throw new Error('Viewers cannot create records.');
+  const existing = await getLatestDailyCashForUser(projectId, date, currentUserId);
+  if (existing) {
+    await updateDailyCash(existing.local_daily_id, values);
+    return;
+  }
+  await createDailyCashForUser(projectId, date, currentUserId, values);
+}
+
 async function nextTransactionNo(type: TransactionType, dateText: string) {
   const db = await getDb();
   const ymd = dateText.slice(0, 10).replaceAll('-', '');
@@ -676,13 +712,15 @@ export async function createTransaction(input: {
   changeUsd?: number;
   changeLrd?: number;
   photoUri?: string | null;
+  date?: string;
 }) {
   const db = await getDb();
   const projectId = input.projectId ?? activeProjectId;
   if (!projectId || !currentUserId) throw new Error('Missing active project or user');
   const user = await getCurrentUser();
   if (user?.role === 'viewer') throw new Error('Viewers cannot create records.');
-  const dateText = nowIso();
+  const dateText = input.date ? `${input.date.slice(0, 10)}${nowIso().slice(10)}` : nowIso();
+  await ensureDailyCashForUser(projectId, dateText.slice(0, 10), currentUserId);
   const exchangeRate = input.fromAmount && input.toAmount ? input.toAmount / input.fromAmount : null;
   const row = {
     local_transaction_id: localId('txn'),
@@ -753,6 +791,7 @@ export async function createManagerTransfer(input: {
   note: string;
   photoUri?: string | null;
   projectId?: string;
+  date?: string;
 }) {
   const db = await getDb();
   const projectId = input.projectId ?? activeProjectId;
@@ -760,9 +799,11 @@ export async function createManagerTransfer(input: {
   const user = await getCurrentUser();
   if (user?.role === 'viewer') throw new Error('Viewers cannot create records.');
   if (input.toUserId === currentUserId) throw new Error('Cannot transfer to yourself');
-  const dateText = nowIso();
+  const dateText = input.date ? `${input.date.slice(0, 10)}${nowIso().slice(10)}` : nowIso();
   const sender = user;
   const receiver = await db.getFirstAsync<User>('SELECT * FROM users WHERE local_user_id = ? AND active = 1', input.toUserId);
+  await ensureDailyCashForUser(projectId, dateText.slice(0, 10), currentUserId);
+  await ensureDailyCashForUser(projectId, dateText.slice(0, 10), input.toUserId);
   const senderId = localId('txn');
   const receiverId = localId('txn');
   const baseNote = input.note.trim();
@@ -1115,5 +1156,4 @@ export function replaceLocalDate(timestamp: string, date: string) {
   );
   return `${formatLocalDate(local)}T${padDatePart(local.getHours())}:${padDatePart(local.getMinutes())}:${padDatePart(local.getSeconds())}.${padMilliseconds(local.getMilliseconds())}${timezoneOffset(local)}`;
 }
-
 
