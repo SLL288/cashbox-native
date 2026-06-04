@@ -10,6 +10,10 @@ import type { Area, Currency, ProjectUser, TransactionType, User } from '@/lib/t
 const parseAmount = (value: string) => Number(value.replace(/,/g, ''));
 const money = (value: number) => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+function paymentLine(usd: number, lrd: number) {
+  return [`USD ${money(usd)}`, `LRD ${money(lrd)}`].join(' / ');
+}
+
 function savedMessage(lines: string[]) {
   return ['已保存到本机', '有网络时会自动同步。', '', ...lines].join('\n');
 }
@@ -20,6 +24,8 @@ export default function AddRecordScreen() {
   const selectedDate = typeof params.date === 'string' ? params.date.slice(0, 10) : undefined;
   const [currency, setCurrency] = useState<Currency>('USD');
   const [amount, setAmount] = useState('');
+  const [paymentUsd, setPaymentUsd] = useState('');
+  const [paymentLrd, setPaymentLrd] = useState('');
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
   const [area, setArea] = useState<Area>('矿区');
   const [note, setNote] = useState('');
@@ -118,13 +124,13 @@ export default function AddRecordScreen() {
       return;
     }
 
-    const parsedAmount = parseAmount(amount);
-    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
-      void warningFeedback('请输入金额');
-      Alert.alert('金额必填', '请输入大于 0 的金额。');
-      return;
-    }
     if (type === 'transfer') {
+      const parsedAmount = parseAmount(amount);
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+        void warningFeedback('请输入金额');
+        Alert.alert('金额必填', '请输入大于 0 的金额。');
+        return;
+      }
       if (!toUserId) {
         void warningFeedback('请选择收款人');
         Alert.alert('请选择收款人', '请选择要转给哪位经理。');
@@ -150,19 +156,33 @@ export default function AddRecordScreen() {
       ]));
       return;
     }
+    const usdAmount = parseAmount(paymentUsd) || 0;
+    const lrdAmount = parseAmount(paymentLrd) || 0;
+    if (!Number.isFinite(usdAmount) || !Number.isFinite(lrdAmount) || usdAmount < 0 || lrdAmount < 0 || usdAmount + lrdAmount <= 0) {
+      void warningFeedback('请输入金额');
+      Alert.alert('金额必填', '请输入 USD 或 LRD 金额，至少一项大于 0。');
+      return;
+    }
+    const primaryCurrency: Currency = usdAmount > 0 ? 'USD' : 'LRD';
+    const primaryAmount = usdAmount > 0 ? usdAmount : lrdAmount;
     await createTransaction({
       type,
-      amount: parsedAmount,
-      currency,
+      amount: primaryAmount,
+      currency: primaryCurrency,
       category,
       note,
       area: type === 'expense' ? area : null,
+      fromCurrency: usdAmount > 0 ? 'USD' : undefined,
+      fromAmount: usdAmount > 0 ? usdAmount : undefined,
+      toCurrency: lrdAmount > 0 ? 'LRD' : undefined,
+      toAmount: lrdAmount > 0 ? lrdAmount : undefined,
       changeUsd: type === 'expense' ? parseAmount(changeUsd) || 0 : 0,
       changeLrd: type === 'expense' ? parseAmount(changeLrd) || 0 : 0,
       photoUri,
       date: selectedDate,
     });
-    setAmount('');
+    setPaymentUsd('');
+    setPaymentLrd('');
     setNote('');
     setChangeUsd('');
     setChangeLrd('');
@@ -170,7 +190,7 @@ export default function AddRecordScreen() {
     void successFeedback('记录已保存');
     Alert.alert('已保存', savedMessage([
       `类型：${type === 'expense' ? '支出' : '现金收入'}`,
-      `金额：${currency} ${money(parsedAmount)}`,
+      `金额：${paymentLine(usdAmount, lrdAmount)}`,
       `类别：${category}`,
       type === 'expense' && (parseAmount(changeUsd) > 0 || parseAmount(changeLrd) > 0) ? `找零：USD ${money(parseAmount(changeUsd) || 0)} / LRD ${money(parseAmount(changeLrd) || 0)}` : '',
       photoUri ? '照片：已添加' : '照片：无',
@@ -210,15 +230,27 @@ export default function AddRecordScreen() {
         </>
       ) : (
         <>
-          <Section title="金额">
-            <TextInput style={styles.input} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="0.00" placeholderTextColor="#8A6F3D" />
-          </Section>
-          <Section title="币种">
-            <View style={styles.row}>
-              <Choice label="USD" active={currency === 'USD'} onPress={() => setCurrency('USD')} />
-              <Choice label="LRD" active={currency === 'LRD'} onPress={() => setCurrency('LRD')} />
-            </View>
-          </Section>
+          {type === 'transfer' ? (
+            <>
+              <Section title="金额">
+                <TextInput style={styles.input} value={amount} onChangeText={setAmount} keyboardType="decimal-pad" placeholder="0.00" placeholderTextColor="#8A6F3D" />
+              </Section>
+              <Section title="币种">
+                <View style={styles.row}>
+                  <Choice label="USD" active={currency === 'USD'} onPress={() => setCurrency('USD')} />
+                  <Choice label="LRD" active={currency === 'LRD'} onPress={() => setCurrency('LRD')} />
+                </View>
+              </Section>
+            </>
+          ) : (
+            <Section title="金额">
+              <View style={styles.twoColumns}>
+                <TextInput style={[styles.input, styles.columnInput]} value={paymentUsd} onChangeText={setPaymentUsd} keyboardType="decimal-pad" placeholder="USD" placeholderTextColor="#8A6F3D" />
+                <TextInput style={[styles.input, styles.columnInput]} value={paymentLrd} onChangeText={setPaymentLrd} keyboardType="decimal-pad" placeholder="LRD" placeholderTextColor="#8A6F3D" />
+              </View>
+              <Text style={styles.helperText}>同一笔付款可同时填写 USD 和 LRD；没有用到的币种留空。</Text>
+            </Section>
+          )}
           {type === 'transfer' ? (
             <Section title="收款经理">
               <View style={styles.wrap}>

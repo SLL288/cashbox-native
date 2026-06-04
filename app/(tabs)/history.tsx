@@ -1,6 +1,8 @@
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
+import * as MediaLibrary from 'expo-media-library';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { Alert, Image, KeyboardAvoidingView, Modal, Platform, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
@@ -31,6 +33,28 @@ import type { Area, CashTransaction, Currency, DailyCash, DailyCashOverview, Dai
 
 const money = (value: number) => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+function paymentParts(item: CashTransaction) {
+  const hasComponents = item.type !== 'exchange' && (item.from_currency === 'USD' || item.to_currency === 'LRD');
+  if (hasComponents) {
+    return {
+      usd: item.from_currency === 'USD' ? Number(item.from_amount) || 0 : 0,
+      lrd: item.to_currency === 'LRD' ? Number(item.to_amount) || 0 : 0,
+    };
+  }
+  return {
+    usd: item.currency === 'USD' ? Number(item.amount) || 0 : 0,
+    lrd: item.currency === 'LRD' ? Number(item.amount) || 0 : 0,
+  };
+}
+
+function formatPaymentParts(item: CashTransaction) {
+  const parts = paymentParts(item);
+  return [
+    parts.usd > 0 ? `USD ${money(parts.usd)}` : null,
+    parts.lrd > 0 ? `LRD ${money(parts.lrd)}` : null,
+  ].filter(Boolean).join(' / ') || `${item.currency} ${money(item.amount)}`;
+}
+
 export default function HistoryScreen() {
   const params = useLocalSearchParams<{ date?: string }>();
   const [deviceToday, setDeviceToday] = useState(getTodayIso());
@@ -47,6 +71,7 @@ export default function HistoryScreen() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [userFilterId, setUserFilterId] = useState<string | null>(null);
+  const [viewingPhoto, setViewingPhoto] = useState<{ uri: string; title: string } | null>(null);
   const defaultedUserFilterRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -113,6 +138,16 @@ export default function HistoryScreen() {
       ? overview.actual_count === 0 ? `按应有 ${money(overview.expected_lrd)}` : money(overview.balance_lrd)
       : '未录入';
   const canManageTransaction = (item: CashTransaction) => currentUser?.role === 'admin' || (currentUser?.role === 'manager' && item.created_by === currentUser?.local_user_id);
+
+  const viewPhoto = async (item: CashTransaction) => {
+    void tapFeedback('查看照片');
+    const uri = await resolvePhotoUri(item.photo_uri);
+    if (!uri) {
+      Alert.alert('无法打开照片', '照片还没有同步完成，或远程图片链接已失效。');
+      return;
+    }
+    setViewingPhoto({ uri, title: item.transaction_no });
+  };
 
   const askDelete = (item: CashTransaction) => {
     void tapFeedback('删除');
@@ -194,6 +229,7 @@ export default function HistoryScreen() {
               if (canManageTransaction(item)) setEditing(item);
               else Alert.alert('只读记录', '经理只能修改自己录入的记录。');
             }}
+            onViewPhoto={() => viewPhoto(item)}
             onDelete={() => askDelete(item)}
           />
         ))}
@@ -202,6 +238,7 @@ export default function HistoryScreen() {
 
       {transactions.length === 0 ? <Text style={styles.empty}>没有符合条件的记录。</Text> : null}
       {editing ? <EditModal transaction={editing} onClose={() => setEditing(null)} onSaved={load} /> : null}
+      {viewingPhoto ? <PhotoViewer title={viewingPhoto.title} uri={viewingPhoto.uri} onClose={() => setViewingPhoto(null)} /> : null}
     </ScrollView>
     </SafeAreaView>
   );
@@ -218,13 +255,13 @@ function formatTransactionAmount(item: CashTransaction) {
   if (item.type === 'exchange') {
     return `${item.from_currency} ${money(item.from_amount ?? 0)} -> ${item.to_currency} ${money(item.to_amount ?? 0)}`;
   }
-  return `${item.currency} ${money(item.amount)}`;
+  return formatPaymentParts(item);
 }
 
 function transactionTitleAmount(item: CashTransaction) {
-  if (item.type === 'expense') return `-${item.currency} ${money(item.amount)}`;
-  if (item.type === 'cash_in') return `+${item.currency} ${money(item.amount)}`;
-  if (item.type === 'transfer') return `-${item.currency} ${money(item.amount)}`;
+  if (item.type === 'expense') return `-${formatPaymentParts(item)}`;
+  if (item.type === 'cash_in') return `+${formatPaymentParts(item)}`;
+  if (item.type === 'transfer') return `-${formatPaymentParts(item)}`;
   return `兑换 ${formatTransactionAmount(item)}`;
 }
 
@@ -328,7 +365,19 @@ function DateSelect({
   );
 }
 
-function SwipeSummaryRow({ item, canEdit, onEdit, onDelete }: { item: CashTransaction; canEdit: boolean; onEdit: () => void; onDelete: () => void }) {
+function SwipeSummaryRow({
+  item,
+  canEdit,
+  onEdit,
+  onViewPhoto,
+  onDelete,
+}: {
+  item: CashTransaction;
+  canEdit: boolean;
+  onEdit: () => void;
+  onViewPhoto: () => void;
+  onDelete: () => void;
+}) {
   return (
     <Swipeable
       friction={2}
@@ -346,6 +395,11 @@ function SwipeSummaryRow({ item, canEdit, onEdit, onDelete }: { item: CashTransa
         </View>
         <Text style={styles.summaryItemText}>{recordDateTime(item)} / {labelType(item.type)} / {transactionDescription(item)}</Text>
         <Text style={styles.summaryItemMeta}>{item.created_by_name || item.created_by}</Text>
+        {item.photo_uri ? (
+          <Pressable style={styles.photoLinkButton} onPress={() => { void tapFeedback('照片'); onViewPhoto(); }}>
+            <Text style={styles.photoLinkText}>查看照片</Text>
+          </Pressable>
+        ) : null}
       </View>
     </Swipeable>
   );
@@ -423,9 +477,70 @@ function CopySummaryBlock({
   );
 }
 
+function photoFileName(title: string) {
+  return `${title.replace(/[^a-zA-Z0-9_-]/g, '_') || 'cashbox-photo'}.jpg`;
+}
+
+async function localPhotoUriForSave(uri: string, title: string) {
+  if (uri.startsWith('file://')) return uri;
+  const localUri = `${FileSystem.cacheDirectory}${photoFileName(title)}`;
+  const result = await FileSystem.downloadAsync(uri, localUri);
+  return result.uri;
+}
+
+function PhotoViewer({ title, uri, onClose }: { title: string; uri: string; onClose: () => void }) {
+  const [saving, setSaving] = useState(false);
+
+  const savePhoto = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const permission = await MediaLibrary.requestPermissionsAsync(true);
+      if (!permission.granted) {
+        Alert.alert('需要权限', '请允许保存照片后再下载。');
+        return;
+      }
+      const localUri = await localPhotoUriForSave(uri, title);
+      await MediaLibrary.saveToLibraryAsync(localUri);
+      void successFeedback('照片已保存');
+      Alert.alert('已保存', '照片已保存到相册。');
+    } catch {
+      Alert.alert('保存失败', '无法保存这张照片，请稍后重试。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible animationType="fade" presentationStyle="fullScreen">
+      <SafeAreaView style={styles.viewerScreen}>
+        <View style={styles.viewerHeader}>
+          <Text style={styles.viewerTitle}>{title}</Text>
+          <Pressable style={styles.viewerHeaderButton} onPress={() => { void tapFeedback('关闭照片'); onClose(); }}>
+            <Text style={styles.viewerHeaderButtonText}>关闭</Text>
+          </Pressable>
+        </View>
+        <View style={styles.viewerImageWrap}>
+          <Image source={{ uri }} style={styles.viewerImage} resizeMode="contain" />
+        </View>
+        <View style={styles.viewerFooter}>
+          <Pressable style={styles.downloadButton} onPress={() => { void tapFeedback('下载照片'); void savePhoto(); }}>
+            <Text style={styles.downloadButtonText}>{saving ? '保存中...' : '下载照片'}</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
 function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransaction; onClose: () => void; onSaved: () => void }) {
+  const initialPayment = paymentParts(transaction);
   const [amount, setAmount] = useState(String(transaction.amount));
   const [currency, setCurrency] = useState<Currency>(transaction.currency);
+  const [paymentUsd, setPaymentUsd] = useState(initialPayment.usd > 0 ? String(initialPayment.usd) : '');
+  const [paymentLrd, setPaymentLrd] = useState(initialPayment.lrd > 0 ? String(initialPayment.lrd) : '');
+  const [changeUsd, setChangeUsd] = useState(transaction.change_usd ? String(transaction.change_usd) : '');
+  const [changeLrd, setChangeLrd] = useState(transaction.change_lrd ? String(transaction.change_lrd) : '');
   const [category, setCategory] = useState(transaction.category);
   const [area, setArea] = useState<Area>((transaction.area as Area) ?? '矿区');
   const [note, setNote] = useState(transaction.note ?? '');
@@ -434,6 +549,7 @@ function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransac
   const [toAmount, setToAmount] = useState(String(transaction.to_amount ?? ''));
   const [photoUri, setPhotoUri] = useState<string | null>(transaction.photo_uri);
   const [previewUri, setPreviewUri] = useState<string | null>(transaction.photo_uri?.startsWith('storage://') ? null : transaction.photo_uri);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [editDateOpen, setEditDateOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const categories = useMemo(() => (transaction.type === 'expense' ? EXPENSE_CATEGORIES : CASH_IN_CATEGORIES), [transaction.type]);
@@ -483,17 +599,41 @@ function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransac
         photo_uri: photoUri,
       });
     } else {
-      const parsedAmount = Number(amount.replace(/,/g, ''));
-      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return Alert.alert('金额必填');
-      await updateTransaction(transaction.local_transaction_id, {
-        amount: parsedAmount,
-        currency,
-        category,
-        area: transaction.type === 'expense' ? area : null,
-        note: note.trim() || null,
-        date,
-        photo_uri: photoUri,
-      });
+      const usdAmount = Number(paymentUsd.replace(/,/g, '')) || 0;
+      const lrdAmount = Number(paymentLrd.replace(/,/g, '')) || 0;
+      if (transaction.type === 'transfer') {
+        const parsedAmount = Number(amount.replace(/,/g, ''));
+        if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return Alert.alert('金额必填');
+        await updateTransaction(transaction.local_transaction_id, {
+          amount: parsedAmount,
+          currency,
+          category,
+          area: null,
+          note: note.trim() || null,
+          date,
+          photo_uri: photoUri,
+        });
+      } else {
+        if (!Number.isFinite(usdAmount) || !Number.isFinite(lrdAmount) || usdAmount < 0 || lrdAmount < 0 || usdAmount + lrdAmount <= 0) return Alert.alert('金额必填', '请输入 USD 或 LRD 金额，至少一项大于 0。');
+        const primaryCurrency: Currency = usdAmount > 0 ? 'USD' : 'LRD';
+        const primaryAmount = usdAmount > 0 ? usdAmount : lrdAmount;
+        await updateTransaction(transaction.local_transaction_id, {
+          amount: primaryAmount,
+          currency: primaryCurrency,
+          category,
+          area: transaction.type === 'expense' ? area : null,
+          from_currency: usdAmount > 0 ? 'USD' : null,
+          from_amount: usdAmount > 0 ? usdAmount : null,
+          to_currency: lrdAmount > 0 ? 'LRD' : null,
+          to_amount: lrdAmount > 0 ? lrdAmount : null,
+          exchange_rate: null,
+          change_usd: transaction.type === 'expense' ? Number(changeUsd.replace(/,/g, '')) || 0 : null,
+          change_lrd: transaction.type === 'expense' ? Number(changeLrd.replace(/,/g, '')) || 0 : null,
+          note: note.trim() || null,
+          date,
+          photo_uri: photoUri,
+        });
+      }
     }
     onClose();
     void successFeedback('保存成功');
@@ -513,17 +653,34 @@ function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransac
           </>
         ) : (
           <>
-            <Field label="金额" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" />
-            <Text style={styles.label}>币种</Text>
-            <View style={styles.row}>
-              <Choice label="USD" active={currency === 'USD'} onPress={() => setCurrency('USD')} />
-              <Choice label="LRD" active={currency === 'LRD'} onPress={() => setCurrency('LRD')} />
-            </View>
+            {transaction.type === 'transfer' ? (
+              <>
+                <Field label="金额" value={amount} onChangeText={setAmount} keyboardType="decimal-pad" />
+                <Text style={styles.label}>币种</Text>
+                <View style={styles.row}>
+                  <Choice label="USD" active={currency === 'USD'} onPress={() => setCurrency('USD')} />
+                  <Choice label="LRD" active={currency === 'LRD'} onPress={() => setCurrency('LRD')} />
+                </View>
+              </>
+            ) : (
+              <>
+                <Text style={styles.label}>金额</Text>
+                <View style={styles.twoColumns}>
+                  <TextInput style={[styles.input, styles.columnInput]} value={paymentUsd} onChangeText={setPaymentUsd} keyboardType="decimal-pad" placeholder="USD" placeholderTextColor="#8A6F3D" />
+                  <TextInput style={[styles.input, styles.columnInput]} value={paymentLrd} onChangeText={setPaymentLrd} keyboardType="decimal-pad" placeholder="LRD" placeholderTextColor="#8A6F3D" />
+                </View>
+              </>
+            )}
             {transaction.type === 'expense' ? (
               <>
                 <Text style={styles.label}>发生地点</Text>
                 <View style={styles.row}>
                   {AREA_OPTIONS.map((item) => <Choice key={item} label={item} active={area === item} onPress={() => setArea(item)} />)}
+                </View>
+                <Text style={styles.label}>找零（可选）</Text>
+                <View style={styles.twoColumns}>
+                  <TextInput style={[styles.input, styles.columnInput]} value={changeUsd} onChangeText={setChangeUsd} keyboardType="decimal-pad" placeholder="找零 USD" placeholderTextColor="#8A6F3D" />
+                  <TextInput style={[styles.input, styles.columnInput]} value={changeLrd} onChangeText={setChangeLrd} keyboardType="decimal-pad" placeholder="找零 LRD" placeholderTextColor="#8A6F3D" />
                 </View>
               </>
             ) : null}
@@ -544,7 +701,11 @@ function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransac
         />
         <Field label="备注" value={note} onChangeText={setNote} multiline onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120)} />
         <Text style={styles.label}>照片</Text>
-        {previewUri ? <Image source={{ uri: previewUri }} style={styles.photoPreview} /> : <Text style={styles.emptyPhoto}>当前没有照片。</Text>}
+        {previewUri ? (
+          <Pressable onPress={() => { void tapFeedback('查看照片'); setViewerOpen(true); }}>
+            <Image source={{ uri: previewUri }} style={styles.photoPreview} />
+          </Pressable>
+        ) : <Text style={styles.emptyPhoto}>当前没有照片。</Text>}
         <View style={styles.wrap}>
           <Choice label="拍照" active={false} onPress={() => pickPhoto('camera')} />
           <Choice label="从相册选择" active={false} onPress={() => pickPhoto('library')} />
@@ -555,6 +716,7 @@ function EditModal({ transaction, onClose, onSaved }: { transaction: CashTransac
           <Pressable style={styles.primaryButton} onPress={() => { void tapFeedback('保存'); void save(); }}><Text style={styles.primaryText}>保存</Text></Pressable>
         </View>
       </ScrollView>
+      {viewerOpen && previewUri ? <PhotoViewer title={transaction.transaction_no} uri={previewUri} onClose={() => setViewerOpen(false)} /> : null}
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -596,6 +758,8 @@ const styles = StyleSheet.create({
   choiceTextActive: { color: '#FFFFFF' },
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
   row: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  twoColumns: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  columnInput: { flex: 1 },
   summary: { backgroundColor: '#FFFFFF', borderRadius: 8, padding: 14, borderWidth: 1, borderColor: '#E5D9BF', marginBottom: 12 },
   summaryTitle: { color: '#111827', fontSize: 17, fontWeight: '900', marginBottom: 6 },
   summaryLine: { color: '#374151', fontSize: 14, marginTop: 4 },
@@ -606,6 +770,8 @@ const styles = StyleSheet.create({
   summaryItemTitle: { color: '#111827', fontSize: 14, fontWeight: '900' },
   summaryItemText: { color: '#4B5563', fontSize: 13, marginTop: 3 },
   summaryItemMeta: { color: '#6B7280', fontSize: 12, marginTop: 3 },
+  photoLinkButton: { alignSelf: 'flex-start', minHeight: 34, borderRadius: 8, borderWidth: 1, borderColor: '#C8A94B', backgroundColor: '#FFFCF5', justifyContent: 'center', paddingHorizontal: 10, marginTop: 8 },
+  photoLinkText: { color: '#7C5800', fontSize: 12, fontWeight: '900' },
   expenseAmount: { color: '#B91C1C' },
   cashInAmount: { color: '#047857' },
   exchangeAmount: { color: '#1D4ED8' },
@@ -644,4 +810,14 @@ const styles = StyleSheet.create({
   secondaryText: { color: '#111827', fontSize: 16, fontWeight: '900' },
   deleteButton: { flex: 1, minHeight: 50, borderRadius: 8, backgroundColor: '#FEE2E2', alignItems: 'center', justifyContent: 'center' },
   deleteText: { color: '#991B1B', fontSize: 16, fontWeight: '900' },
+  viewerScreen: { flex: 1, backgroundColor: '#000000' },
+  viewerHeader: { minHeight: 56, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingHorizontal: 14 },
+  viewerTitle: { flex: 1, color: '#FFFFFF', fontSize: 16, fontWeight: '900' },
+  viewerHeaderButton: { minHeight: 40, borderRadius: 8, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
+  viewerHeaderButtonText: { color: '#111827', fontWeight: '900' },
+  viewerImageWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  viewerImage: { width: '100%', height: '100%' },
+  viewerFooter: { padding: 14 },
+  downloadButton: { minHeight: 50, borderRadius: 8, backgroundColor: '#F3C74D', alignItems: 'center', justifyContent: 'center' },
+  downloadButtonText: { color: '#111827', fontSize: 16, fontWeight: '900' },
 });

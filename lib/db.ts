@@ -530,12 +530,24 @@ export async function getDailySummary(projectId: string, date = todayIso(), user
   const summary = blankDailySummary();
   rows.forEach((row) => {
     if (row.type === 'cash_in') {
-      if (row.currency === 'USD') summary.cash_in_usd += Number(row.amount) || 0;
-      if (row.currency === 'LRD') summary.cash_in_lrd += Number(row.amount) || 0;
+      const hasComponents = row.from_currency === 'USD' || row.to_currency === 'LRD';
+      if (hasComponents) {
+        summary.cash_in_usd += row.from_currency === 'USD' ? Number(row.from_amount) || 0 : 0;
+        summary.cash_in_lrd += row.to_currency === 'LRD' ? Number(row.to_amount) || 0 : 0;
+      } else {
+        if (row.currency === 'USD') summary.cash_in_usd += Number(row.amount) || 0;
+        if (row.currency === 'LRD') summary.cash_in_lrd += Number(row.amount) || 0;
+      }
     }
     if (row.type === 'expense') {
-      if (row.currency === 'USD') summary.cash_out_usd += Number(row.amount) || 0;
-      if (row.currency === 'LRD') summary.cash_out_lrd += Number(row.amount) || 0;
+      const hasComponents = row.from_currency === 'USD' || row.to_currency === 'LRD';
+      if (hasComponents) {
+        summary.cash_out_usd += row.from_currency === 'USD' ? Number(row.from_amount) || 0 : 0;
+        summary.cash_out_lrd += row.to_currency === 'LRD' ? Number(row.to_amount) || 0 : 0;
+      } else {
+        if (row.currency === 'USD') summary.cash_out_usd += Number(row.amount) || 0;
+        if (row.currency === 'LRD') summary.cash_out_lrd += Number(row.amount) || 0;
+      }
       summary.cash_in_usd += Number(row.change_usd) || 0;
       summary.cash_in_lrd += Number(row.change_lrd) || 0;
     }
@@ -721,7 +733,7 @@ export async function createTransaction(input: {
   if (user?.role === 'viewer') throw new Error('Viewers cannot create records.');
   const dateText = input.date ? `${input.date.slice(0, 10)}${nowIso().slice(10)}` : nowIso();
   await ensureDailyCashForUser(projectId, dateText.slice(0, 10), currentUserId);
-  const exchangeRate = input.fromAmount && input.toAmount ? input.toAmount / input.fromAmount : null;
+  const exchangeRate = input.type === 'exchange' && input.fromAmount && input.toAmount ? input.toAmount / input.fromAmount : null;
   const row = {
     local_transaction_id: localId('txn'),
     transaction_no: await nextTransactionNo(input.type, dateText),
@@ -1156,4 +1168,3 @@ export function replaceLocalDate(timestamp: string, date: string) {
   );
   return `${formatLocalDate(local)}T${padDatePart(local.getHours())}:${padDatePart(local.getMinutes())}:${padDatePart(local.getSeconds())}.${padMilliseconds(local.getMilliseconds())}${timezoneOffset(local)}`;
 }
-

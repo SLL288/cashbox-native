@@ -46,7 +46,15 @@
         }
       ],
       "expo-sqlite",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Cashbox to access receipt photos.",
+          "savePhotosPermission": "Allow Cashbox to save receipt photos.",
+          "granularPermissions": ["photo"]
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
