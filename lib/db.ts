@@ -12,6 +12,7 @@ import type {
   Project,
   ProjectUser,
   TransactionType,
+  TransferState,
   User,
 } from './types';
 
@@ -27,6 +28,11 @@ const authListeners = new Set<() => void>();
 export const EXPENSE_CATEGORIES = ['燃油', '食品', '工资', '维修', '村庄', '政府', '警察 / 检查站', '司机', '小费', '医疗', '运输', '其他'];
 export const CASH_IN_CATEGORIES = ['黄金销售', '经理退回', '退款', '转入', '其他'];
 export const AREA_OPTIONS: Area[] = ['矿区', '外围'];
+const TRANSFER_PENDING: TransferState = 'transfer:pending';
+const TRANSFER_ACCEPTED: TransferState = 'transfer:accepted';
+const TRANSFER_ACCEPTED_SEEN: TransferState = 'transfer:accepted_seen';
+const TRANSFER_REJECTED: TransferState = 'transfer:rejected';
+const TRANSFER_REJECTED_SEEN: TransferState = 'transfer:rejected_seen';
 
 const padDatePart = (value: number) => String(value).padStart(2, '0');
 const padMilliseconds = (value: number) => String(value).padStart(3, '0');
@@ -812,14 +818,11 @@ export async function createManagerTransfer(input: {
   if (user?.role === 'viewer') throw new Error('Viewers cannot create records.');
   if (input.toUserId === currentUserId) throw new Error('Cannot transfer to yourself');
   const dateText = input.date ? `${input.date.slice(0, 10)}${nowIso().slice(10)}` : nowIso();
-  const sender = user;
   const receiver = await db.getFirstAsync<User>('SELECT * FROM users WHERE local_user_id = ? AND active = 1', input.toUserId);
-  await ensureDailyCashForUser(projectId, dateText.slice(0, 10), currentUserId);
-  await ensureDailyCashForUser(projectId, dateText.slice(0, 10), input.toUserId);
+  if (!receiver || receiver.role === 'viewer') throw new Error('Receiver must be an active manager or administrator');
   const senderId = localId('txn');
   const receiverId = localId('txn');
   const baseNote = input.note.trim();
-  const senderNote = `${receiver?.name ?? input.toUserId} 收款${baseNote ? ` - ${baseNote}` : ''}`;
   const senderRow = {
     local_transaction_id: senderId,
     transaction_no: await nextTransactionNo('transfer', dateText),
@@ -829,8 +832,8 @@ export async function createManagerTransfer(input: {
     amount: input.amount,
     currency: input.currency,
     category: '经理转出',
-    note: senderNote,
-    area: null,
+    note: baseNote || null,
+    area: TRANSFER_PENDING,
     from_currency: null,
     from_amount: null,
     to_currency: null,
@@ -842,7 +845,7 @@ export async function createManagerTransfer(input: {
     transfer_to_user_id: input.toUserId,
     transfer_from_user_id: null,
     linked_transaction_id: receiverId,
-    active: 1,
+    active: 0,
     created_by: currentUserId,
     created_at_local: dateText,
     updated_by: null,
@@ -858,8 +861,8 @@ export async function createManagerTransfer(input: {
     amount: input.amount,
     currency: input.currency,
     category: '经理转入',
-    note: `${sender?.name ?? '转出人'} 转入${baseNote ? ` - ${baseNote}` : ''}`,
-    area: null,
+    note: baseNote || null,
+    area: TRANSFER_PENDING,
     from_currency: null,
     from_amount: null,
     to_currency: null,
@@ -871,7 +874,7 @@ export async function createManagerTransfer(input: {
     transfer_to_user_id: null,
     transfer_from_user_id: currentUserId,
     linked_transaction_id: senderId,
-    active: 1,
+    active: 0,
     created_by: input.toUserId,
     created_at_local: dateText,
     updated_by: null,
@@ -885,7 +888,7 @@ export async function createManagerTransfer(input: {
          from_currency, from_amount, to_currency, to_amount, exchange_rate, change_usd, change_lrd, photo_uri,
          transfer_to_user_id, transfer_from_user_id, linked_transaction_id, active, created_by, created_at_local,
          updated_by, updated_at_local, sync_status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.local_transaction_id,
       row.transaction_no,
       row.local_project_id,
@@ -907,6 +910,7 @@ export async function createManagerTransfer(input: {
       row.transfer_to_user_id,
       row.transfer_from_user_id,
       row.linked_transaction_id,
+      row.active,
       row.created_by,
       row.created_at_local,
       row.updated_by,
@@ -915,7 +919,147 @@ export async function createManagerTransfer(input: {
     );
     await audit({ tableName: 'transactions', recordId: row.local_transaction_id, action: 'create', newValue: row, projectId });
   }
-  return `${senderRow.transaction_no} -> ${receiver?.name ?? input.toUserId}`;
+  return `${senderRow.transaction_no} -> ${receiver.name}`;
+}
+
+export async function listPendingTransfersForCurrentUser() {
+  if (!currentUserId) return [];
+  const db = await getDb();
+  return db.getAllAsync<CashTransaction>(
+    `SELECT t.*, sender.name as transfer_from_name, p.project_name
+     FROM transactions t
+     LEFT JOIN users sender ON sender.local_user_id = t.transfer_from_user_id
+     LEFT JOIN projects p ON p.local_project_id = t.local_project_id
+     WHERE t.created_by = ?
+       AND t.transfer_from_user_id IS NOT NULL
+       AND t.area = ?
+       AND t.active = 0
+     ORDER BY t.created_at_local ASC`,
+    currentUserId,
+    TRANSFER_PENDING
+  );
+}
+
+export async function listPendingSentTransfersForCurrentUser() {
+  if (!currentUserId) return [];
+  const db = await getDb();
+  return db.getAllAsync<CashTransaction>(
+    `SELECT t.*, receiver.name as transfer_to_name, p.project_name
+     FROM transactions t
+     LEFT JOIN users receiver ON receiver.local_user_id = t.transfer_to_user_id
+     LEFT JOIN projects p ON p.local_project_id = t.local_project_id
+     WHERE t.created_by = ?
+       AND t.type = 'transfer'
+       AND t.area = ?
+       AND t.active = 0
+     ORDER BY t.created_at_local ASC`,
+    currentUserId,
+    TRANSFER_PENDING
+  );
+}
+
+export async function listUnseenTransferResultsForCurrentUser() {
+  if (!currentUserId) return [];
+  const db = await getDb();
+  return db.getAllAsync<CashTransaction>(
+    `SELECT t.*, receiver.name as transfer_to_name, p.project_name
+     FROM transactions t
+     LEFT JOIN users receiver ON receiver.local_user_id = t.transfer_to_user_id
+     LEFT JOIN projects p ON p.local_project_id = t.local_project_id
+     WHERE t.created_by = ?
+       AND t.type = 'transfer'
+       AND t.area IN (?, ?)
+     ORDER BY COALESCE(t.updated_at_local, t.created_at_local) ASC`,
+    currentUserId,
+    TRANSFER_ACCEPTED,
+    TRANSFER_REJECTED
+  );
+}
+
+export async function respondToTransfer(receiverTransactionId: string, accept: boolean) {
+  if (!currentUserId) throw new Error('Missing active user');
+  const db = await getDb();
+  const receiverRow = await db.getFirstAsync<CashTransaction>(
+    'SELECT * FROM transactions WHERE local_transaction_id = ?',
+    receiverTransactionId
+  );
+  if (!receiverRow || receiverRow.created_by !== currentUserId || !receiverRow.transfer_from_user_id) {
+    throw new Error('Transfer request is not available for this user');
+  }
+  if (receiverRow.area !== TRANSFER_PENDING || !receiverRow.linked_transaction_id) {
+    throw new Error('Transfer request has already been handled');
+  }
+  const senderRow = await db.getFirstAsync<CashTransaction>(
+    'SELECT * FROM transactions WHERE local_transaction_id = ?',
+    receiverRow.linked_transaction_id
+  );
+  if (!senderRow || senderRow.area !== TRANSFER_PENDING) {
+    throw new Error('Linked sender record is missing or already handled');
+  }
+
+  const nextState = accept ? TRANSFER_ACCEPTED : TRANSFER_REJECTED;
+  const nextActive = accept ? 1 : 0;
+  const respondedAt = nowIso();
+
+  if (accept) {
+    const transferDate = receiverRow.date.slice(0, 10);
+    await ensureDailyCashForUser(receiverRow.local_project_id, transferDate, receiverRow.transfer_from_user_id);
+    await ensureDailyCashForUser(receiverRow.local_project_id, transferDate, currentUserId);
+  }
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      `UPDATE transactions
+       SET area = ?, active = ?, updated_by = ?, updated_at_local = ?, sync_status = 'pending'
+       WHERE local_transaction_id IN (?, ?)`,
+      nextState,
+      nextActive,
+      currentUserId,
+      respondedAt,
+      receiverRow.local_transaction_id,
+      senderRow.local_transaction_id
+    );
+  });
+
+  const receiverNext = { ...receiverRow, area: nextState, active: nextActive, updated_by: currentUserId, updated_at_local: respondedAt };
+  const senderNext = { ...senderRow, area: nextState, active: nextActive, updated_by: currentUserId, updated_at_local: respondedAt };
+  await audit({ tableName: 'transactions', recordId: receiverRow.local_transaction_id, action: 'edit', oldValue: receiverRow, newValue: receiverNext, projectId: receiverRow.local_project_id });
+  await audit({ tableName: 'transactions', recordId: senderRow.local_transaction_id, action: 'edit', oldValue: senderRow, newValue: senderNext, projectId: senderRow.local_project_id });
+}
+
+export async function markTransferResultSeen(senderTransactionId: string) {
+  if (!currentUserId) return;
+  const db = await getDb();
+  const row = await db.getFirstAsync<CashTransaction>(
+    'SELECT * FROM transactions WHERE local_transaction_id = ? AND created_by = ?',
+    senderTransactionId,
+    currentUserId
+  );
+  if (!row) return;
+  const nextState = row.area === TRANSFER_ACCEPTED
+    ? TRANSFER_ACCEPTED_SEEN
+    : row.area === TRANSFER_REJECTED
+      ? TRANSFER_REJECTED_SEEN
+      : null;
+  if (!nextState) return;
+  const updatedAt = nowIso();
+  await db.runAsync(
+    `UPDATE transactions
+     SET area = ?, updated_by = ?, updated_at_local = ?, sync_status = 'pending'
+     WHERE local_transaction_id = ?`,
+    nextState,
+    currentUserId,
+    updatedAt,
+    senderTransactionId
+  );
+  await audit({
+    tableName: 'transactions',
+    recordId: senderTransactionId,
+    action: 'edit',
+    oldValue: row,
+    newValue: { ...row, area: nextState, updated_by: currentUserId, updated_at_local: updatedAt },
+    projectId: row.local_project_id,
+  });
 }
 
 export async function listTransactions(projectId: string, dateFilter?: string, search?: string, userFilterId?: string | null, bypassRole = false) {

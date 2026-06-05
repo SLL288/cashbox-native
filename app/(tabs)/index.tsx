@@ -14,8 +14,13 @@ import {
   getExpectedOpeningBalance,
   getOrCreateDailyCash,
   getTodayIso,
+  listPendingSentTransfersForCurrentUser,
+  listPendingTransfersForCurrentUser,
   listProjectsForCurrentUser,
+  listUnseenTransferResultsForCurrentUser,
   logout,
+  markTransferResultSeen,
+  respondToTransfer,
   saveDailyCash,
   setActiveProjectId,
   subscribeAuth,
@@ -23,7 +28,7 @@ import {
 import { getAutoSyncStatus, notifyAutoSyncComplete, setAutoSyncStatus, subscribeAutoSyncComplete, subscribeAutoSyncStatus, type AutoSyncStatus } from '@/lib/syncSignal';
 import { syncWithSupabase } from '@/lib/sync';
 import { successFeedback, tapFeedback, warningFeedback } from '@/lib/feedback';
-import type { DailyCash, DailyCashOverview, DailySummary, Project, User } from '@/lib/types';
+import type { CashTransaction, DailyCash, DailyCashOverview, DailySummary, Project, User } from '@/lib/types';
 
 const money = (value: number | null | undefined) =>
   value === null || value === undefined ? '未填写' : value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -51,11 +56,26 @@ export default function TodayScreen() {
   const [newProjectLocation, setNewProjectLocation] = useState('');
   const [syncStatus, setSyncStatus] = useState<AutoSyncStatus>(getAutoSyncStatus());
   const [refreshing, setRefreshing] = useState(false);
+  const [pendingTransfers, setPendingTransfers] = useState<CashTransaction[]>([]);
+  const [pendingSentTransfers, setPendingSentTransfers] = useState<CashTransaction[]>([]);
+  const [transferResults, setTransferResults] = useState<CashTransaction[]>([]);
+  const promptedTransferIds = useRef(new Set<string>());
+  const reportedTransferIds = useRef(new Set<string>());
+  const transferAlertOpen = useRef(false);
 
   const load = useCallback(async () => {
-    const [currentUser, allowedProjects] = await Promise.all([getCurrentUser(), listProjectsForCurrentUser()]);
+    const [currentUser, allowedProjects, incomingTransfers, sentTransfers, results] = await Promise.all([
+      getCurrentUser(),
+      listProjectsForCurrentUser(),
+      listPendingTransfersForCurrentUser(),
+      listPendingSentTransfersForCurrentUser(),
+      listUnseenTransferResultsForCurrentUser(),
+    ]);
     setUser(currentUser);
     setProjects(allowedProjects);
+    setPendingTransfers(incomingTransfers);
+    setPendingSentTransfers(sentTransfers);
+    setTransferResults(results);
     const active = getActiveProjectId();
     const selected = allowedProjects.some((project) => project.local_project_id === active) ? active : null;
     setProjectId(selected);
@@ -88,6 +108,86 @@ export default function TodayScreen() {
   useEffect(() => subscribeAuth(load), [load]);
   useEffect(() => subscribeAutoSyncComplete(load), [load]);
   useEffect(() => subscribeAutoSyncStatus(setSyncStatus), []);
+
+  const handleTransferResponse = useCallback(async (item: CashTransaction, accept: boolean) => {
+    transferAlertOpen.current = false;
+    try {
+      await respondToTransfer(item.local_transaction_id, accept);
+      void successFeedback(accept ? '转账已确认' : '转账已拒绝');
+      Alert.alert(
+        accept ? '已确认收款' : '已拒绝转账',
+        accept
+          ? '双方记录已生效并计入原转账日期的余额。结果会同步给发送人。'
+          : '这笔转账不会计入双方余额。结果会同步给发送人。'
+      );
+      await load();
+    } catch (error) {
+      void warningFeedback('处理失败');
+      Alert.alert('处理失败', error instanceof Error ? error.message : String(error));
+    }
+  }, [load]);
+
+  const showTransferPrompt = useCallback((item: CashTransaction, automatic = false) => {
+    if (transferAlertOpen.current) return;
+    if (automatic && promptedTransferIds.current.has(item.local_transaction_id)) return;
+    if (automatic) promptedTransferIds.current.add(item.local_transaction_id);
+    transferAlertOpen.current = true;
+    const sender = item.transfer_from_name ?? item.transfer_from_user_id ?? '未知发送人';
+    const note = item.note ? `\n备注：${item.note}` : '';
+    Alert.alert(
+      '收到待确认转账',
+      `发送人：${sender}\n项目：${item.project_name ?? item.local_project_id}\n金额：${item.currency} ${money(item.amount)}\n日期：${item.date.slice(0, 10)}${note}\n\n确认前不会计入任何人的余额。`,
+      [
+        {
+          text: '稍后处理',
+          style: 'cancel',
+          onPress: () => {
+            transferAlertOpen.current = false;
+          },
+        },
+        {
+          text: '拒绝转账',
+          style: 'destructive',
+          onPress: () => void handleTransferResponse(item, false),
+        },
+        {
+          text: '确认收款',
+          onPress: () => void handleTransferResponse(item, true),
+        },
+      ],
+      {
+        cancelable: false,
+      }
+    );
+  }, [handleTransferResponse]);
+
+  useEffect(() => {
+    const item = pendingTransfers.find((transfer) => !promptedTransferIds.current.has(transfer.local_transaction_id));
+    if (item) showTransferPrompt(item, true);
+  }, [pendingTransfers, showTransferPrompt]);
+
+  useEffect(() => {
+    if (transferAlertOpen.current) return;
+    const result = transferResults.find((item) => !reportedTransferIds.current.has(item.local_transaction_id));
+    if (!result) return;
+    reportedTransferIds.current.add(result.local_transaction_id);
+    const accepted = result.area === 'transfer:accepted';
+    transferAlertOpen.current = true;
+    void markTransferResultSeen(result.local_transaction_id).then(load);
+    void (accepted ? successFeedback('转账成功') : warningFeedback('转账被拒绝'));
+    Alert.alert(
+      accepted ? '转账已确认' : '转账被拒绝',
+      `收款人：${result.transfer_to_name ?? result.transfer_to_user_id ?? '未知收款人'}\n项目：${result.project_name ?? result.local_project_id}\n金额：${result.currency} ${money(result.amount)}\n\n${accepted ? '双方余额已更新。' : '这笔转账未计入双方余额。'}`,
+      [{
+        text: '知道了',
+        onPress: () => {
+          transferAlertOpen.current = false;
+          void load();
+        },
+      }],
+      { cancelable: false }
+    );
+  }, [load, transferResults]);
 
   const project = useMemo(() => projects.find((item) => item.local_project_id === projectId), [projects, projectId]);
   const dateOptions = useMemo(() => Array.from({ length: 61 }, (_, index) => addLocalDays(deviceToday, index - 30)), [deviceToday]);
@@ -229,6 +329,37 @@ export default function TodayScreen() {
         onChange={setSelectedDate}
       />
 
+      {pendingTransfers.length > 0 || pendingSentTransfers.length > 0 ? (
+        <View style={styles.transferPanel}>
+          <View style={styles.transferPanelHeader}>
+            <Ionicons name="swap-horizontal-outline" size={21} color="#7C5C16" />
+            <Text style={styles.sectionTitle}>转账状态</Text>
+          </View>
+          {pendingTransfers.map((item) => (
+            <Pressable key={item.local_transaction_id} style={styles.transferNotice} onPress={() => showTransferPrompt(item)}>
+              <View style={styles.transferNoticeText}>
+                <Text style={styles.transferNoticeTitle}>待确认收款</Text>
+                <Text style={styles.transferNoticeMeta}>
+                  {item.transfer_from_name ?? '发送人'} · {item.currency} {money(item.amount)} · {item.project_name ?? '当前项目'}
+                </Text>
+              </View>
+              <Text style={styles.transferAction}>处理</Text>
+            </Pressable>
+          ))}
+          {pendingSentTransfers.map((item) => (
+            <View key={item.local_transaction_id} style={styles.transferNotice}>
+              <View style={styles.transferNoticeText}>
+                <Text style={styles.transferNoticeTitle}>等待对方确认</Text>
+                <Text style={styles.transferNoticeMeta}>
+                  {item.transfer_to_name ?? '收款人'} · {item.currency} {money(item.amount)} · 暂未计入余额
+                </Text>
+              </View>
+              <Text style={styles.transferPending}>待确认</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
       {daily ? (
         <>
           {user?.role === 'viewer' ? null : <View style={styles.statusCard}>
@@ -270,7 +401,7 @@ export default function TodayScreen() {
             <ActionRow label="现金收入" detail={`USD ${money(summary.cash_in_usd)} / LRD ${money(summary.cash_in_lrd)}`} tone="good" onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=cash_in&date=${selectedDate}`)} />
             <ActionRow label="支出" detail={`USD ${money(summary.cash_out_usd)} / LRD ${money(summary.cash_out_lrd)}`} tone="bad" onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=expense&date=${selectedDate}`)} />
             <ActionRow label="货币兑换" detail={`入 USD ${money(summary.exchange_in_usd)} / 入 LRD ${money(summary.exchange_in_lrd)}`} onPress={user?.role === 'viewer' ? undefined : () => router.push(`/add?type=exchange&date=${selectedDate}`)} />
-            {user?.role === 'viewer' ? null : <ActionRow label="经理转账" detail="转给另一位经理" onPress={() => router.push(`/add?type=transfer&date=${selectedDate}`)} />}
+            {user?.role === 'viewer' ? null : <ActionRow label="内部转账" detail="发送后由收款人确认" onPress={() => router.push(`/add?type=transfer&date=${selectedDate}`)} />}
           </View>
 
           <Pressable style={styles.panel} disabled={user?.role === 'viewer'} onPress={() => { void tapFeedback('编辑初始资金'); setFundsOpen(true); }}>
@@ -308,6 +439,7 @@ function InfoModal({ visible, onClose }: { visible: boolean; onClose: () => void
           </View>
           <Text style={styles.infoText}>初始资金：每天开始时填写开账现金；默认带入上一单余额。</Text>
           <Text style={styles.infoText}>实点现金：每天结束时填写实际现金余额，用来校准现金差额。</Text>
+          <Text style={styles.infoText}>内部转账：发送后先等待收款人确认；确认前不计入双方余额，拒绝后也不会产生流水。</Text>
           <Pressable style={styles.infoCloseButton} onPress={() => { void tapFeedback('知道了'); onClose(); }}>
             <Text style={styles.infoCloseText}>知道了</Text>
           </Pressable>
@@ -552,6 +684,14 @@ const styles = StyleSheet.create({
   dateOptionText: { color: '#374151', fontSize: 17, fontWeight: '900', textAlign: 'center' },
   dateOptionTextActive: { color: '#FFFFFF' },
   statusCard: { backgroundColor: '#FFFFFF', borderRadius: 8, padding: 14, gap: 8, marginBottom: 12, borderWidth: 1.5, borderColor: '#C8A94B' },
+  transferPanel: { backgroundColor: '#FFF9EA', borderRadius: 8, padding: 14, borderWidth: 1.5, borderColor: '#C8A94B', marginBottom: 12 },
+  transferPanelHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  transferNotice: { minHeight: 58, borderTopWidth: 1, borderTopColor: '#E5D9BF', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingTop: 10, marginTop: 10 },
+  transferNoticeText: { flex: 1 },
+  transferNoticeTitle: { color: '#111827', fontSize: 14, fontWeight: '900' },
+  transferNoticeMeta: { color: '#4B5563', fontSize: 12, lineHeight: 18, marginTop: 3, fontWeight: '700' },
+  transferAction: { color: '#7C5C16', fontSize: 13, fontWeight: '900' },
+  transferPending: { color: '#92400E', fontSize: 12, fontWeight: '900' },
   panel: { backgroundColor: '#FFFFFF', borderRadius: 8, padding: 14, borderWidth: 1, borderColor: '#E5D9BF', marginBottom: 12 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
   sectionTitle: { color: '#111827', fontSize: 17, fontWeight: '900' },

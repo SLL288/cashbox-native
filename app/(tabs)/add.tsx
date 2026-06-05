@@ -48,7 +48,12 @@ export default function AddRecordScreen() {
       const [projects, user, assignments] = await Promise.all([listProjectsForCurrentUser(), getCurrentUser(), listProjectUsers()]);
       setProjectName(projects.find((project) => project.local_project_id === active)?.project_name ?? '');
       setCurrentUser(user);
-      const activeAssignments = assignments.filter((item) => item.local_project_id === active && item.local_user_id !== user?.local_user_id && item.role_in_project === 'manager');
+      const activeAssignments = assignments.filter(
+        (item) =>
+          item.local_project_id === active &&
+          item.local_user_id !== user?.local_user_id &&
+          (item.role_in_project === 'manager' || item.role_in_project === 'admin')
+      );
       setAssignedUsers(activeAssignments);
       setToUserId((current) => (activeAssignments.some((item) => item.local_user_id === current) ? current : activeAssignments[0]?.local_user_id ?? ''));
     };
@@ -133,7 +138,7 @@ export default function AddRecordScreen() {
       }
       if (!toUserId) {
         void warningFeedback('请选择收款人');
-        Alert.alert('请选择收款人', '请选择要转给哪位经理。');
+        Alert.alert('请选择收款人', '请选择要转给哪位经理或管理员。');
         return;
       }
       await createManagerTransfer({
@@ -147,11 +152,12 @@ export default function AddRecordScreen() {
       setAmount('');
       setNote('');
       setPhotoUri(null);
-      void successFeedback('转账已保存');
-      Alert.alert('已保存', savedMessage([
-        '类型：经理转账',
+      void successFeedback('转账待确认');
+      Alert.alert('等待收款人确认', savedMessage([
+        '状态：待确认，暂不计入双方余额',
+        '类型：内部转账',
         `金额：${currency} ${money(parsedAmount)}`,
-        `收款经理：${assignedUsers.find((item) => item.local_user_id === toUserId)?.manager_name ?? toUserId}`,
+        `收款人：${assignedUsers.find((item) => item.local_user_id === toUserId)?.manager_name ?? toUserId}`,
         photoUri ? '照片：已添加' : '照片：无',
       ]));
       return;
@@ -209,7 +215,7 @@ export default function AddRecordScreen() {
           <Choice label="支出" active={type === 'expense'} onPress={() => selectType('expense')} />
           <Choice label="现金收入" active={type === 'cash_in'} onPress={() => selectType('cash_in')} />
           <Choice label="货币兑换" active={type === 'exchange'} onPress={() => selectType('exchange')} />
-          <Choice label="经理转账" active={type === 'transfer'} onPress={() => selectType('transfer')} />
+          <Choice label="内部转账" active={type === 'transfer'} onPress={() => selectType('transfer')} />
         </View>
       </Section>
 
@@ -252,13 +258,13 @@ export default function AddRecordScreen() {
             </Section>
           )}
           {type === 'transfer' ? (
-            <Section title="收款经理">
+            <Section title="收款人">
               <View style={styles.wrap}>
                 {assignedUsers.map((item) => (
                   <Choice key={item.local_user_id} label={item.manager_name ?? item.local_user_id} active={toUserId === item.local_user_id} onPress={() => setToUserId(item.local_user_id)} />
                 ))}
               </View>
-              {assignedUsers.length === 0 ? <Text style={styles.emptyText}>当前项目没有其他已分配经理。</Text> : null}
+              {assignedUsers.length === 0 ? <Text style={styles.emptyText}>当前项目没有其他可收款的经理或管理员。</Text> : null}
             </Section>
           ) : null}
           {type === 'expense' ? (

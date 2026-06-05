@@ -247,7 +247,7 @@ export default function HistoryScreen() {
 function labelType(type: string) {
   if (type === 'expense') return '支出';
   if (type === 'cash_in') return '收入';
-  if (type === 'transfer') return '转账';
+  if (type === 'transfer') return '内部转账';
   return '兑换';
 }
 
@@ -273,7 +273,7 @@ function transactionAmountStyle(item: CashTransaction) {
 }
 
 function transactionDescription(item: CashTransaction) {
-  const area = item.area ? `${item.area} - ` : '';
+  const area = item.type === 'expense' && (item.area === '矿区' || item.area === '外围') ? `${item.area} - ` : '';
   const note = item.note ? ` / ${item.note}` : '';
   const change = item.type === 'expense' && ((item.change_usd ?? 0) > 0 || (item.change_lrd ?? 0) > 0)
     ? ` / 找零 USD ${money(item.change_usd ?? 0)} LRD ${money(item.change_lrd ?? 0)}`

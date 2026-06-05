@@ -2,6 +2,12 @@ export type UserRole = 'admin' | 'manager' | 'viewer';
 export type TransactionType = 'expense' | 'cash_in' | 'exchange' | 'transfer';
 export type Currency = 'USD' | 'LRD';
 export type Area = '矿区' | '外围';
+export type TransferState =
+  | 'transfer:pending'
+  | 'transfer:accepted'
+  | 'transfer:accepted_seen'
+  | 'transfer:rejected'
+  | 'transfer:rejected_seen';
 
 export type User = {
   id: number;
@@ -80,7 +86,7 @@ export type CashTransaction = {
   currency: Currency;
   category: string;
   note: string | null;
-  area: Area | null;
+  area: Area | TransferState | null;
   from_currency: Currency | null;
   from_amount: number | null;
   to_currency: Currency | null;
@@ -100,6 +106,8 @@ export type CashTransaction = {
   sync_status: string;
   created_by_name?: string;
   project_name?: string;
+  transfer_from_name?: string;
+  transfer_to_name?: string;
 };
 
 export type AuditLog = {
