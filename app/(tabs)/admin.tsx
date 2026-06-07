@@ -108,6 +108,10 @@ export default function AdminScreen() {
       void warningFeedback('请选择项目');
       return Alert.alert('请选择项目');
     }
+    if (project.local_project_id === 'project_gold_field_default') {
+      void warningFeedback('默认项目不能删除');
+      return Alert.alert('不能删除', '默认项目是系统必需项目，不能停用。');
+    }
     Alert.alert('删除项目', `确定删除 ${project.project_name} 吗？`, [
       { text: '取消', style: 'cancel' },
       {
@@ -201,7 +205,9 @@ export default function AdminScreen() {
         <Field label="地点" value={editLocation} onChangeText={setEditLocation} />
         <View style={styles.row}>
           <PrimaryButton label="保存修改" onPress={saveProjectEdit} />
-          <DangerButton label="删除项目" onPress={deleteProjectAction} />
+          {editProjectId === 'project_gold_field_default'
+            ? <Text style={styles.protectedProject}>默认项目不能删除</Text>
+            : <DangerButton label="删除项目" onPress={deleteProjectAction} />}
         </View>
       </Card>
 
@@ -346,4 +352,5 @@ const styles = StyleSheet.create({
   auditRow: { borderTopWidth: 1, borderTopColor: '#E5E7EB', paddingVertical: 10 },
   auditTitle: { color: '#111827', fontWeight: '900' },
   auditJson: { color: '#4B5563', fontSize: 12, marginTop: 4 },
+  protectedProject: { color: '#6B7280', fontWeight: '800', paddingVertical: 12 },
 });

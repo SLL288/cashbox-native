@@ -246,6 +246,14 @@ export async function initDb() {
     '利比里亚',
     createdAt
   );
+  await db.runAsync(
+    `UPDATE projects
+     SET active = 1,
+         updated_at_local = CASE WHEN active = 0 THEN ? ELSE updated_at_local END
+     WHERE local_project_id = ?`,
+    createdAt,
+    PROJECT_ID
+  );
   const assignment = await db.getFirstAsync<ProjectUser>(
     'SELECT * FROM project_users WHERE local_project_id = ? AND local_user_id = ?',
     PROJECT_ID,
@@ -258,6 +266,14 @@ export async function initDb() {
       PROJECT_ID,
       ADMIN_ID,
       createdAt
+    );
+  } else if (assignment.active !== 1) {
+    await db.runAsync(
+      `UPDATE project_users
+       SET active = 1, role_in_project = 'admin'
+       WHERE local_project_id = ? AND local_user_id = ?`,
+      PROJECT_ID,
+      ADMIN_ID
     );
   }
   await db.runAsync(
@@ -1177,6 +1193,9 @@ export async function updateProject(project: Project, values: { project_name: st
 }
 
 export async function deleteProject(project: Project) {
+  if (project.local_project_id === PROJECT_ID) {
+    throw new Error('The built-in project cannot be deactivated');
+  }
   const db = await getDb();
   await db.runAsync('UPDATE projects SET active = 0, updated_at_local = ? WHERE local_project_id = ?', nowIso(), project.local_project_id);
   await db.runAsync('UPDATE project_users SET active = 0 WHERE local_project_id = ?', project.local_project_id);

@@ -93,6 +93,18 @@ function remoteIsNewer(
   return rowTimestamp(remote) >= rowTimestamp(local);
 }
 
+function localRowsNewerThanRemote<T extends Record<string, unknown>>(
+  localRows: T[],
+  remoteRows: T[],
+  idColumn: keyof T
+) {
+  const remoteById = new Map(remoteRows.map((row) => [row[idColumn], row]));
+  return localRows.filter((local) => {
+    const remote = remoteById.get(local[idColumn]);
+    return !remote || rowTimestamp(local) > rowTimestamp(remote);
+  });
+}
+
 async function pushTable<T extends Record<string, unknown>>(table: SyncTable, rows: T[], columns: readonly string[], onConflict: string) {
   if (!supabase || rows.length === 0) return 0;
   const { error } = await supabase.from(table).upsert(toRemoteRows(rows, columns), { onConflict });
@@ -252,7 +264,9 @@ async function upsertLocalProjects(rows: Project[]) {
   const db = await getDatabase();
   for (const row of rows) {
     const existing = await db.getFirstAsync<Project>('SELECT * FROM projects WHERE local_project_id = ?', row.local_project_id);
-    if (existing && !remoteIsNewer(existing, row)) continue;
+    const isUneditedDefaultSeed = existing?.local_project_id === 'project_gold_field_default'
+      && !existing.updated_at_local;
+    if (existing && !isUneditedDefaultSeed && !remoteIsNewer(existing, row)) continue;
     await db.runAsync(
       `INSERT INTO projects (local_project_id, project_name, location, active, created_at_local, updated_at_local)
        VALUES (?, ?, ?, ?, ?, ?)
@@ -408,6 +422,13 @@ export async function syncWithSupabase(): Promise<SyncResult> {
 
   await initDb();
   const db = await getDatabase();
+  const [remoteUsersBeforePush, remoteProjectsBeforePush] = await Promise.all([
+    pullTable<User>('users'),
+    pullTable<Project>('projects'),
+  ]);
+  await upsertLocalUsers(remoteUsersBeforePush);
+  await upsertLocalProjects(remoteProjectsBeforePush);
+
   const [users, projects, projectUsers, pendingDailyCash, pendingTransactions, auditRows] = await Promise.all([
     db.getAllAsync<User>('SELECT * FROM users'),
     db.getAllAsync<Project>('SELECT * FROM projects'),
@@ -418,10 +439,12 @@ export async function syncWithSupabase(): Promise<SyncResult> {
   ]);
 
   await uploadPendingPhotos(pendingTransactions);
+  const changedUsers = localRowsNewerThanRemote(users, remoteUsersBeforePush, 'local_user_id');
+  const changedProjects = localRowsNewerThanRemote(projects, remoteProjectsBeforePush, 'local_project_id');
 
   let pushed = 0;
-  pushed += await pushTable('users', users, userColumns, 'local_user_id');
-  pushed += await pushTable('projects', projects, projectColumns, 'local_project_id');
+  pushed += await pushTable('users', changedUsers, userColumns, 'local_user_id');
+  pushed += await pushTable('projects', changedProjects, projectColumns, 'local_project_id');
   pushed += await pushTable('project_users', projectUsers, projectUserColumns, 'local_project_id,local_user_id');
   pushed += await pushTable('daily_cash', pendingDailyCash, dailyCashColumns, 'local_daily_id');
   pushed += await pushTable('transactions', pendingTransactions, transactionColumns, 'local_transaction_id');
